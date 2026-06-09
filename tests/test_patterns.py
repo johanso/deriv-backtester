@@ -53,7 +53,7 @@ class TestConsolidation:
         assert isinstance(result, list)
 
     def test_estructura_senal(self):
-        """Cada señal debe tener las claves requeridas."""
+        """Cada señal debe tener las claves requeridas y precios coherentes."""
         df = _make_flat_df(n=100)
         # Agregar ruptura alcista al final
         breakout_row = {
@@ -70,6 +70,10 @@ class TestConsolidation:
             s = signals[0]
             for key in ("index", "type", "direction", "entry_price", "sl", "tp1", "tp2"):
                 assert key in s, f"Falta clave: {key}"
+            if s["direction"] == "long":
+                assert s["tp1"] > s["entry_price"] > s["sl"]
+            else:
+                assert s["tp1"] < s["entry_price"] < s["sl"]
 
     def test_sin_ruptura_no_hay_senales_en_flat(self):
         """En un DataFrame completamente plano sin ruptura, no debe haber señales."""
@@ -101,6 +105,10 @@ class TestBounce:
         for s in signals:
             for key in ("index", "type", "direction", "entry_price", "sl", "tp1", "tp2"):
                 assert key in s
+            if s["direction"] == "long":
+                assert s["tp1"] > s["entry_price"] > s["sl"]
+            else:
+                assert s["tp1"] < s["entry_price"] < s["sl"]
 
     def test_direction_valida(self):
         signals = detect_bounce(_make_trending_df(n=80))
@@ -149,6 +157,10 @@ class TestImpulse:
         for s in signals:
             for key in ("index", "type", "direction", "entry_price", "sl", "tp1", "tp2"):
                 assert key in s
+            if s["direction"] == "long":
+                assert s["tp1"] > s["entry_price"] > s["sl"]
+            else:
+                assert s["tp1"] < s["entry_price"] < s["sl"]
 
 
 # ─── Double top/bottom ────────────────────────────────────────────────────────
@@ -189,3 +201,7 @@ class TestDouble:
         for s in signals:
             for key in ("index", "type", "direction", "entry_price", "sl", "tp1", "tp2"):
                 assert key in s
+            if s["direction"] == "long":
+                assert s["tp1"] > s["entry_price"] > s["sl"]
+            else:
+                assert s["tp1"] < s["entry_price"] < s["sl"]

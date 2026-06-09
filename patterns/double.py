@@ -18,10 +18,14 @@ def detect(
     """
     signals = []
     n = len(df)
+    visited_i: set[int] = set()
 
     # ── Doble techo ──────────────────────────────────────────────────────────
     for i in range(min_gap + 1, n - 1):
         high_i = df.iloc[i]["high"]
+
+        if i in visited_i:
+            continue
 
         for j in range(max(0, i - 100), i - min_gap):
             high_j = df.iloc[j]["high"]
@@ -31,7 +35,6 @@ def detect(
 
             # Verificar que hay un valle intermedio
             valley = df.iloc[j + 1: i]["low"].min()
-            valley_idx = df.iloc[j + 1: i]["low"].idxmin()
 
             # El siguiente close debe romper por debajo del valle
             if i + 1 < n and df.iloc[i + 1]["close"] < valley:
@@ -49,10 +52,14 @@ def detect(
                     "tp1":         round(entry - risk, 5),
                     "tp2":         round(entry - 2 * risk, 5),
                 })
+                visited_i.add(i)
                 break  # una señal por posición i
 
     # ── Doble suelo ──────────────────────────────────────────────────────────
     for i in range(min_gap + 1, n - 1):
+        if i in visited_i:
+            continue
+
         low_i = df.iloc[i]["low"]
 
         for j in range(max(0, i - 100), i - min_gap):
@@ -80,6 +87,7 @@ def detect(
                     "tp1":         round(entry + risk, 5),
                     "tp2":         round(entry + 2 * risk, 5),
                 })
+                visited_i.add(i)
                 break
 
     return signals

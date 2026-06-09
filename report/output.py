@@ -135,11 +135,8 @@ def print_chart(
     title = f"{symbol_cli.upper()} {tf_cli} — {PATTERN_LABELS.get(pattern_key, pattern_key)}"
     style = mpf.make_mpf_style(base_mpf_style="nightclouds")
 
-    mpf.plot(
-        df_plot,
-        type="candle",
-        style=style,
-        title=title,
-        addplot=apds if apds else [],
-        volume=False,
-    )
+    plot_kwargs = dict(type="candle", style=style, title=title, volume=False)
+    if apds:
+        plot_kwargs["addplot"] = apds
+
+    mpf.plot(df_plot, **plot_kwargs)

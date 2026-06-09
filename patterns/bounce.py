@@ -43,15 +43,15 @@ def detect(
     signals = []
     n = len(df)
 
-    for i in range(lookback, n):
-        window = df.iloc[max(0, i - lookback): i]
-        swing_highs, swing_lows = _find_swing_levels(window, lookback)
+    # Precalcular todos los niveles swing una sola vez sobre el DataFrame completo
+    all_swing_highs, all_swing_lows = _find_swing_levels(df, lookback)
 
+    for i in range(lookback, n):
         candle = df.iloc[i]
         price = candle["close"]
 
         # Rebote alcista: toca swing low y cierra arriba (vela alcista)
-        for level in swing_lows:
+        for level in all_swing_lows:
             if abs(candle["low"] - level) / level <= tol_pct and candle["close"] > candle["open"]:
                 sl = level * (1 - tol_pct)
                 risk = price - sl
@@ -69,7 +69,7 @@ def detect(
                 break  # una señal por vela
 
         # Rebote bajista: toca swing high y cierra abajo (vela bajista)
-        for level in swing_highs:
+        for level in all_swing_highs:
             if abs(candle["high"] - level) / level <= tol_pct and candle["close"] < candle["open"]:
                 sl = level * (1 + tol_pct)
                 risk = sl - price

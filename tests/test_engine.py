@@ -32,7 +32,7 @@ class TestSimulateTrade:
             "entry_price": 100.2, "sl": 99.0, "tp1": 101.4, "tp2": 102.6,
         }
         result = simulate_trade(df, signal, max_candles=5)
-        assert result == "tp1"
+        assert result == "tp1_only"
 
     def test_hit_tp2_long(self):
         df = _make_df([
@@ -81,7 +81,7 @@ class TestSimulateTrade:
             "entry_price": 100.0, "sl": 102.0, "tp1": 98.0, "tp2": 96.0,
         }
         result = simulate_trade(df, signal, max_candles=5)
-        assert result == "tp1"
+        assert result == "tp1_only"
 
 
 class TestRunBacktest:

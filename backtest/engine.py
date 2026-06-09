@@ -10,7 +10,7 @@ def simulate_trade(df: pd.DataFrame, signal: dict, max_candles: int) -> str:
     """
     Simula una trade a partir de una señal usando las velas posteriores.
 
-    Retorna: 'tp1', 'tp2', 'sl' o 'timeout'
+    Retorna: 'tp1_only', 'tp2', 'sl' o 'timeout'
     """
     idx = signal["index"]
     direction = signal["direction"]
@@ -18,6 +18,8 @@ def simulate_trade(df: pd.DataFrame, signal: dict, max_candles: int) -> str:
     sl = signal["sl"]
     tp1 = signal["tp1"]
     tp2 = signal["tp2"]
+
+    tp1_hit = False
 
     # Iterar sobre las velas siguientes hasta max_candles
     for i in range(idx + 1, min(idx + 1 + max_candles, len(df))):
@@ -31,16 +33,16 @@ def simulate_trade(df: pd.DataFrame, signal: dict, max_candles: int) -> str:
             if high >= tp2:
                 return "tp2"
             if high >= tp1:
-                return "tp1"
+                tp1_hit = True
         else:  # short
             if high >= sl:
                 return "sl"
             if low <= tp2:
                 return "tp2"
             if low <= tp1:
-                return "tp1"
+                tp1_hit = True
 
-    return "timeout"
+    return "tp1_only" if tp1_hit else "timeout"
 
 
 def run_backtest(
@@ -62,15 +64,18 @@ def run_backtest(
         results.append(outcome)
 
     total = len(results)
-    tp1_count = results.count("tp1") + results.count("tp2")
+    # "tp1_only": precio tocó TP1 pero no TP2; "tp2": llegó a TP2
+    tp1_only_count = results.count("tp1_only")
     tp2_count = results.count("tp2")
     sl_count = results.count("sl")
 
-    win_rate_tp1 = tp1_count / total if total > 0 else 0.0
+    # win_rate_tp1: alcanzó al menos TP1 (incluye los que siguieron a TP2)
+    win_rate_tp1 = (tp1_only_count + tp2_count) / total if total > 0 else 0.0
+    # win_rate_tp2: solo los que llegaron a TP2
     win_rate_tp2 = tp2_count / total if total > 0 else 0.0
 
-    # R:R promedio: TP2 = 2R, TP1 = 1R, SL = -1R, timeout = 0R
-    rr_map = {"tp2": 2.0, "tp1": 1.0, "sl": -1.0, "timeout": 0.0}
+    # R:R promedio: TP2 = 2R, tp1_only = 1R, SL = -1R, timeout = 0R
+    rr_map = {"tp2": 2.0, "tp1_only": 1.0, "sl": -1.0, "timeout": 0.0}
     rr_values = [rr_map[r] for r in results]
     avg_rr = float(np.mean(rr_values)) if rr_values else 0.0
 
