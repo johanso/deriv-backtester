@@ -11,11 +11,16 @@ from rich.console import Console
 # Agregar el directorio raíz al path para importaciones relativas
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import SYMBOLS, TIMEFRAMES, DEFAULT_CANDLE_COUNT, PATTERN_LABELS
+from config import SYMBOLS, TIMEFRAMES, DEFAULT_CANDLE_COUNT, PATTERN_LABELS, OPTIMIZE_PARAMS
 from api.deriv import fetch_ohlc
 from patterns import PATTERN_REGISTRY
 from backtest.engine import run_backtest
-from report.output import print_results, export_csv, print_chart
+from report.output import (
+    print_results, export_csv, print_chart,
+    print_optimize_table, print_validate_table,
+    print_simulate_summary, plot_balance_curve,
+)
+from backtest.simulator import simulate_account
 
 app = typer.Typer(
     name="deriv-backtester",
@@ -175,6 +180,278 @@ def compare(
 
     if export:
         export_csv(all_results, "all", tf, export)
+
+
+@app.command()
+def optimize(
+    symbol: str = typer.Option("v75",   "--symbol",  "-s", help="Símbolo a analizar"),
+    tf: str     = typer.Option("5m",    "--tf",      "-t", help="Temporalidad (1m/5m/15m/1h/4h)"),
+    pattern: str = typer.Option("ncandle", "--pattern", "-p", help="Patrón a optimizar"),
+    count: int  = typer.Option(DEFAULT_CANDLE_COUNT, "--count", "-c", help="Número de velas"),
+    param_min:  int = typer.Option(None, "--min",  help="Valor mínimo del parámetro"),
+    param_max:  int = typer.Option(None, "--max",  help="Valor máximo del parámetro"),
+    param_step: int = typer.Option(None, "--step", help="Paso entre valores"),
+    export: Optional[str] = typer.Option(None, "--export", "-e", help="Exportar resultados a CSV"),
+) -> None:
+    """Barre un rango de parámetros de un patrón y muestra cuál maximiza Expectancy."""
+
+    _validate_symbol(symbol)
+    granularity = _validate_tf(tf)
+    _validate_pattern(pattern)
+
+    if pattern not in OPTIMIZE_PARAMS:
+        supported = list(OPTIMIZE_PARAMS.keys())
+        console.print(f"[red]Optimización no soportada para '{pattern}'.[/] Patrones válidos: {supported}")
+        raise typer.Exit(1)
+
+    opt = OPTIMIZE_PARAMS[pattern]
+    p_min  = param_min  if param_min  is not None else opt["default_min"]
+    p_max  = param_max  if param_max  is not None else opt["default_max"]
+    p_step = param_step if param_step is not None else opt["default_step"]
+
+    console.print(f"[bold]Descargando {count} velas[/] de {symbol.upper()} ({tf})...")
+    try:
+        df = fetch_ohlc(SYMBOLS[symbol], granularity, count)
+    except ConnectionError as e:
+        console.print(f"[red]Error de conexión:[/] {e}")
+        raise typer.Exit(1)
+
+    console.print(
+        f"[green]Descargadas {len(df)} velas.[/] "
+        f"Barriendo {opt['label']} de {p_min} a {p_max} (paso {p_step})..."
+    )
+
+    detect_fn = PATTERN_REGISTRY[pattern]
+    param_name = opt["param_name"]
+    param_values = list(range(p_min, p_max + 1, p_step))
+
+    rows = []
+    for val in param_values:
+        signals = detect_fn(df, **{param_name: val})
+        metrics = run_backtest(df, signals)
+        rows.append({"param_value": val, "metrics": metrics})
+        console.print(
+            f"  {opt['label']}={val:>3}  "
+            f"señales={metrics['total_signals']:>4}  "
+            f"WR={metrics['win_rate_tp1']:>5.1f}%  "
+            f"exp={metrics['expectancy']:>+.3f}"
+        )
+
+    print_optimize_table(rows, symbol, tf, pattern, len(df))
+
+    if export:
+        _export_optimize_csv(rows, symbol, tf, pattern, opt["param_name"], export)
+
+
+def _export_optimize_csv(
+    rows: list[dict],
+    symbol_cli: str,
+    tf_cli: str,
+    pattern_key: str,
+    param_name: str,
+    filepath: str,
+) -> None:
+    """Exporta los resultados de optimización a CSV."""
+    import csv
+    from pathlib import Path
+
+    path = Path(filepath)
+    fieldnames = [
+        param_name, "symbol", "timeframe",
+        "total_signals", "win_rate_tp1", "win_rate_tp2",
+        "avg_rr", "expectancy", "max_consecutive_losses",
+    ]
+
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            m = row["metrics"]
+            writer.writerow({
+                param_name:              row["param_value"],
+                "symbol":                symbol_cli,
+                "timeframe":             tf_cli,
+                "total_signals":         m["total_signals"],
+                "win_rate_tp1":          m["win_rate_tp1"],
+                "win_rate_tp2":          m["win_rate_tp2"],
+                "avg_rr":                m["avg_rr"],
+                "expectancy":            m["expectancy"],
+                "max_consecutive_losses": m["max_consecutive_losses"],
+            })
+
+    console.print(f"[green]Optimización exportada a:[/] {path.resolve()}")
+
+
+@app.command()
+def simulate(
+    symbol: str   = typer.Option("v75",     "--symbol",    "-s", help="Símbolo a analizar"),
+    tf: str       = typer.Option("1m",      "--tf",        "-t", help="Temporalidad (1m/5m/15m/1h/4h)"),
+    pattern: str  = typer.Option("ncandle", "--pattern",   "-p", help="Patrón a simular"),
+    count: int    = typer.Option(6000,      "--count",     "-c", help="Número de velas"),
+    balance: float = typer.Option(1000.0,  "--balance",   "-b", help="Balance inicial en $"),
+    risk_pct: float = typer.Option(1.0,    "--risk-pct",  "-r", help="Riesgo por trade en % del balance"),
+    n_candles: Optional[int] = typer.Option(None, "--n-candles", help="n_candles para el patrón ncandle"),
+    csv_out: str  = typer.Option("balance_curve.csv", "--csv", help="Ruta del CSV de salida"),
+    no_chart: bool = typer.Option(False,   "--no-chart",  help="Omitir el gráfico matplotlib"),
+) -> None:
+    """Simula el crecimiento de cuenta trade a trade con riesgo porcentual fijo."""
+
+    _validate_symbol(symbol)
+    granularity = _validate_tf(tf)
+    _validate_pattern(pattern)
+
+    if risk_pct <= 0 or risk_pct > 100:
+        console.print("[red]--risk-pct debe estar entre 0 y 100.[/]")
+        raise typer.Exit(1)
+    if balance <= 0:
+        console.print("[red]--balance debe ser positivo.[/]")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]Descargando {count} velas[/] de {symbol.upper()} ({tf})...")
+    try:
+        df = fetch_ohlc(SYMBOLS[symbol], granularity, count)
+    except ConnectionError as e:
+        console.print(f"[red]Error de conexión:[/] {e}")
+        raise typer.Exit(1)
+
+    pattern_params: dict = {}
+    if pattern == "ncandle" and n_candles is not None:
+        pattern_params["n_candles"] = n_candles
+
+    console.print(f"[green]Descargadas {len(df)} velas.[/] Detectando señales...")
+    signals = PATTERN_REGISTRY[pattern](df, **pattern_params)
+    console.print(f"  {len(signals)} señales detectadas. Simulando cuenta...")
+
+    trades, summary = simulate_account(df, signals, balance, risk_pct)
+
+    print_simulate_summary(summary, symbol, tf, pattern, pattern_params)
+
+    # Exportar CSV
+    _write_balance_csv(trades, csv_out)
+    console.print(f"[green]Curva de balance guardada en:[/] {csv_out}")
+
+    if not no_chart and trades:
+        plot_balance_curve(trades, symbol, tf)
+
+
+def _write_balance_csv(trades: list[dict], filepath: str) -> None:
+    """Escribe la evolución del balance trade por trade a CSV."""
+    import csv
+    from pathlib import Path
+
+    fieldnames = [
+        "trade_num", "signal_index", "direction", "outcome",
+        "risk_amount", "pnl", "balance", "peak_balance",
+        "drawdown_abs", "drawdown_pct",
+    ]
+    with open(Path(filepath), "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(trades)
+
+
+@app.command()
+def validate(
+    symbol: str  = typer.Option("v75",     "--symbol",    "-s", help="Símbolo a analizar"),
+    tf: str      = typer.Option("1m",      "--tf",        "-t", help="Temporalidad (1m/5m/15m/1h/4h)"),
+    pattern: str = typer.Option("ncandle", "--pattern",   "-p", help="Patrón a validar"),
+    count: int   = typer.Option(6000,      "--count",     "-c", help="Total de velas (se divide en 2)"),
+    n_candles: Optional[int] = typer.Option(None, "--n-candles", help="Parámetro n_candles para ncandle"),
+    export: Optional[str]    = typer.Option(None, "--export", "-e", help="Exportar métricas a CSV"),
+) -> None:
+    """Divide los datos en in-sample / out-of-sample y compara métricas de ambas mitades."""
+
+    _validate_symbol(symbol)
+    granularity = _validate_tf(tf)
+    _validate_pattern(pattern)
+
+    console.print(f"[bold]Descargando {count} velas[/] de {symbol.upper()} ({tf})...")
+    try:
+        df = fetch_ohlc(SYMBOLS[symbol], granularity, count)
+    except ConnectionError as e:
+        console.print(f"[red]Error de conexión:[/] {e}")
+        raise typer.Exit(1)
+
+    total = len(df)
+    if total < 2:
+        console.print("[red]No hay suficientes velas para dividir.[/]")
+        raise typer.Exit(1)
+
+    split = total // 2
+    df_is  = df.iloc[:split].reset_index(drop=True)
+    df_oos = df.iloc[split:].reset_index(drop=True)
+
+    console.print(
+        f"[green]Descargadas {total} velas.[/]  "
+        f"In-sample: 0-{split - 1} ({split} velas)  "
+        f"Out-of-sample: {split}-{total - 1} ({total - split} velas)"
+    )
+
+    # Construir kwargs específicos del patrón
+    pattern_params: dict = {}
+    if pattern == "ncandle" and n_candles is not None:
+        pattern_params["n_candles"] = n_candles
+
+    detect_fn = PATTERN_REGISTRY[pattern]
+
+    console.print("  Ejecutando in-sample...")
+    is_signals  = detect_fn(df_is,  **pattern_params)
+    is_metrics  = run_backtest(df_is,  is_signals)
+
+    console.print("  Ejecutando out-of-sample...")
+    oos_signals = detect_fn(df_oos, **pattern_params)
+    oos_metrics = run_backtest(df_oos, oos_signals)
+
+    print_validate_table(
+        is_metrics, oos_metrics,
+        split, total - split,
+        symbol, tf, pattern, pattern_params,
+    )
+
+    if export:
+        _export_validate_csv(is_metrics, oos_metrics, symbol, tf, pattern, pattern_params, export)
+
+
+def _export_validate_csv(
+    is_metrics: dict,
+    oos_metrics: dict,
+    symbol_cli: str,
+    tf_cli: str,
+    pattern_key: str,
+    pattern_params: dict,
+    filepath: str,
+) -> None:
+    """Exporta la comparativa IS/OOS a CSV."""
+    import csv
+    from pathlib import Path
+
+    path = Path(filepath)
+    fieldnames = [
+        "split", "symbol", "timeframe", "pattern",
+        *pattern_params.keys(),
+        "total_signals", "win_rate_tp1", "win_rate_tp2",
+        "avg_rr", "expectancy", "max_consecutive_losses",
+    ]
+
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for label, m in (("in-sample", is_metrics), ("out-of-sample", oos_metrics)):
+            writer.writerow({
+                "split":    label,
+                "symbol":   symbol_cli,
+                "timeframe": tf_cli,
+                "pattern":  pattern_key,
+                **pattern_params,
+                "total_signals":          m["total_signals"],
+                "win_rate_tp1":           m["win_rate_tp1"],
+                "win_rate_tp2":           m["win_rate_tp2"],
+                "avg_rr":                 m["avg_rr"],
+                "expectancy":             m["expectancy"],
+                "max_consecutive_losses": m["max_consecutive_losses"],
+            })
+
+    console.print(f"[green]Validación exportada a:[/] {path.resolve()}")
 
 
 if __name__ == "__main__":

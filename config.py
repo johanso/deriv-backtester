@@ -33,12 +33,12 @@ API_RETRY_BACKOFF = 2  # segundos entre reintentos
 
 CONSOLIDATION_DEFAULTS = {
     "n_candles": 4,       # mínimo de velas en la zona de consolidación
-    "range_pct": 0.003,   # rango máximo (high-low)/precio para considerar consolidación
+    "range_pct": 0.008,   # rango máximo (high-low)/precio para considerar consolidación
 }
 
 BOUNCE_DEFAULTS = {
-    "lookback": 50,       # velas hacia atrás para buscar niveles swing
-    "tol_pct": 0.002,     # tolerancia de precio para tocar el nivel
+    "lookback": 20,       # velas hacia atrás para buscar niveles swing
+    "tol_pct": 0.004,     # tolerancia de precio para tocar el nivel
 }
 
 IMPULSE_DEFAULTS = {
@@ -49,6 +49,28 @@ IMPULSE_DEFAULTS = {
 DOUBLE_DEFAULTS = {
     "tol_pct": 0.002,     # tolerancia para considerar dos toques iguales
     "min_gap": 5,         # mínimo de velas entre los dos toques
+}
+
+BOLLINGER_DEFAULTS = {
+    "period":  20,        # período de la SMA y desviación estándar
+    "std_dev": 2.0,       # multiplicador de la desviación estándar
+}
+
+NCANDLE_DEFAULTS = {
+    "n_candles": 15,      # velas del rango a superar para confirmar ruptura
+}
+
+# ─── Optimización de parámetros ───────────────────────────────────────────────
+# Mapea patrón -> nombre del parámetro a barrer y rango por defecto
+
+OPTIMIZE_PARAMS = {
+    "ncandle": {
+        "param_name":    "n_candles",
+        "label":         "N velas",
+        "default_min":   5,
+        "default_max":   30,
+        "default_step":  5,
+    },
 }
 
 # ─── Motor de backtesting ──────────────────────────────────────────────────────
@@ -63,4 +85,6 @@ PATTERN_LABELS = {
     "bounce":        "Rebote en Nivel",
     "impulse":       "Impulso+Retroceso",
     "double":        "Doble Techo/Suelo",
+    "bollinger":     "Bollinger Reversion",
+    "ncandle":       "N-Candle Breakout",
 }

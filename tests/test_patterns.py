@@ -12,6 +12,8 @@ from patterns.consolidation import detect as detect_consolidation
 from patterns.bounce import detect as detect_bounce
 from patterns.impulse import detect as detect_impulse
 from patterns.double import detect as detect_double
+from patterns.bollinger import detect as detect_bollinger
+from patterns.ncandle import detect as detect_ncandle
 
 
 def _make_flat_df(n: int = 50, price: float = 100.0, spread: float = 0.1) -> pd.DataFrame:
@@ -205,3 +207,169 @@ class TestDouble:
                 assert s["tp1"] > s["entry_price"] > s["sl"]
             else:
                 assert s["tp1"] < s["entry_price"] < s["sl"]
+
+
+# ─── Bollinger Reversion ──────────────────────────────────────────────────────
+
+class TestBollinger:
+    def _make_bollinger_df(self) -> pd.DataFrame:
+        """DataFrame con precio estable seguido de una extensión y reversión."""
+        rows = []
+        ts = pd.Timestamp("2024-01-01")
+        base = 100.0
+
+        # 25 velas estables para que la SMA/std se estabilicen
+        for i in range(25):
+            rows.append({
+                "time":  ts + pd.Timedelta(minutes=5 * i),
+                "open":  base, "high": base + 0.2, "low": base - 0.2, "close": base,
+            })
+
+        # Vela de señal SHORT: cierra muy por encima de la banda superior
+        rows.append({
+            "time":  ts + pd.Timedelta(minutes=5 * 25),
+            "open":  base + 0.5, "high": base + 2.0, "low": base + 0.4, "close": base + 1.8,
+        })
+
+        # Vela de confirmación SHORT: cierra por debajo de la banda superior (regresa a base)
+        rows.append({
+            "time":  ts + pd.Timedelta(minutes=5 * 26),
+            "open":  base + 1.0, "high": base + 1.2, "low": base - 0.1, "close": base + 0.1,
+        })
+
+        return pd.DataFrame(rows)
+
+    def _make_bollinger_long_df(self) -> pd.DataFrame:
+        """DataFrame con extensión bajista y reversión alcista."""
+        rows = []
+        ts = pd.Timestamp("2024-01-01")
+        base = 100.0
+
+        for i in range(25):
+            rows.append({
+                "time":  ts + pd.Timedelta(minutes=5 * i),
+                "open":  base, "high": base + 0.2, "low": base - 0.2, "close": base,
+            })
+
+        # Vela de señal LONG: cierra muy por debajo de la banda inferior
+        rows.append({
+            "time":  ts + pd.Timedelta(minutes=5 * 25),
+            "open":  base - 0.5, "high": base - 0.4, "low": base - 2.0, "close": base - 1.8,
+        })
+
+        # Vela de confirmación LONG: cierra por encima de la banda inferior
+        rows.append({
+            "time":  ts + pd.Timedelta(minutes=5 * 26),
+            "open":  base - 1.0, "high": base + 0.1, "low": base - 1.2, "close": base - 0.1,
+        })
+
+        return pd.DataFrame(rows)
+
+    def test_retorna_lista(self):
+        assert isinstance(detect_bollinger(_make_flat_df(n=50)), list)
+
+    def test_senal_short_precios_coherentes(self):
+        df = self._make_bollinger_df()
+        signals = detect_bollinger(df, period=20, std_dev=2.0)
+        short_signals = [s for s in signals if s["direction"] == "short"]
+        for s in short_signals:
+            assert s["tp1"] < s["entry_price"] < s["sl"]
+
+    def test_senal_long_precios_coherentes(self):
+        df = self._make_bollinger_long_df()
+        signals = detect_bollinger(df, period=20, std_dev=2.0)
+        long_signals = [s for s in signals if s["direction"] == "long"]
+        for s in long_signals:
+            assert s["tp1"] > s["entry_price"] > s["sl"]
+
+    def test_estructura_senal(self):
+        df = self._make_bollinger_df()
+        signals = detect_bollinger(df, period=20, std_dev=2.0)
+        for s in signals:
+            for key in ("index", "type", "direction", "entry_price", "sl", "tp1", "tp2"):
+                assert key in s
+            assert s["type"] == "bollinger"
+
+
+# ─── N-Candle Breakout ────────────────────────────────────────────────────────
+
+class TestNCandle:
+    def _make_ncandle_long_df(self, n: int = 15) -> pd.DataFrame:
+        """DataFrame con rango lateral seguido de una ruptura alcista clara."""
+        rows = []
+        ts = pd.Timestamp("2024-01-01")
+        base = 100.0
+
+        # n+1 velas dentro del rango
+        for i in range(n + 1):
+            rows.append({
+                "time":  ts + pd.Timedelta(minutes=5 * i),
+                "open":  base, "high": base + 0.5, "low": base - 0.5, "close": base,
+            })
+
+        # Vela de ruptura alcista: cierra por encima del high del rango
+        rows.append({
+            "time":  ts + pd.Timedelta(minutes=5 * (n + 1)),
+            "open":  base + 0.4, "high": base + 1.5, "low": base + 0.3, "close": base + 1.2,
+        })
+
+        # Vela de entrada (siguiente a la ruptura)
+        rows.append({
+            "time":  ts + pd.Timedelta(minutes=5 * (n + 2)),
+            "open":  base + 1.2, "high": base + 2.0, "low": base + 1.0, "close": base + 1.8,
+        })
+
+        return pd.DataFrame(rows)
+
+    def _make_ncandle_short_df(self, n: int = 15) -> pd.DataFrame:
+        """DataFrame con rango lateral seguido de una ruptura bajista clara."""
+        rows = []
+        ts = pd.Timestamp("2024-01-01")
+        base = 100.0
+
+        for i in range(n + 1):
+            rows.append({
+                "time":  ts + pd.Timedelta(minutes=5 * i),
+                "open":  base, "high": base + 0.5, "low": base - 0.5, "close": base,
+            })
+
+        # Vela de ruptura bajista: cierra por debajo del low del rango
+        rows.append({
+            "time":  ts + pd.Timedelta(minutes=5 * (n + 1)),
+            "open":  base - 0.4, "high": base - 0.3, "low": base - 1.5, "close": base - 1.2,
+        })
+
+        # Vela de entrada
+        rows.append({
+            "time":  ts + pd.Timedelta(minutes=5 * (n + 2)),
+            "open":  base - 1.2, "high": base - 1.0, "low": base - 2.0, "close": base - 1.8,
+        })
+
+        return pd.DataFrame(rows)
+
+    def test_retorna_lista(self):
+        assert isinstance(detect_ncandle(_make_flat_df(n=40)), list)
+
+    def test_senal_long_precios_coherentes(self):
+        df = self._make_ncandle_long_df()
+        signals = detect_ncandle(df, n_candles=15)
+        long_signals = [s for s in signals if s["direction"] == "long"]
+        assert len(long_signals) > 0
+        for s in long_signals:
+            assert s["tp1"] > s["entry_price"] > s["sl"]
+
+    def test_senal_short_precios_coherentes(self):
+        df = self._make_ncandle_short_df()
+        signals = detect_ncandle(df, n_candles=15)
+        short_signals = [s for s in signals if s["direction"] == "short"]
+        assert len(short_signals) > 0
+        for s in short_signals:
+            assert s["tp1"] < s["entry_price"] < s["sl"]
+
+    def test_estructura_senal(self):
+        df = self._make_ncandle_long_df()
+        signals = detect_ncandle(df, n_candles=15)
+        for s in signals:
+            for key in ("index", "type", "direction", "entry_price", "sl", "tp1", "tp2"):
+                assert key in s
+            assert s["type"] == "ncandle"
